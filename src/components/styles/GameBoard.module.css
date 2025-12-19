@@ -5,30 +5,36 @@
     z-index: 1;
     display: flex;
     justify-content: center;
+    /* Performance optimization */
+    contain: layout style;
 }
 
 .selectionMode {
-    /* box-shadow handles by child board inside */
+    /* Simplified glow for mobile - no heavy box-shadow */
 }
 
-/* Inner board handle dimensions via inline style */
 .board {
     position: relative;
     background-color: var(--board-bg);
     border-radius: 10px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
     touch-action: none;
     user-select: none;
-    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+    transition: background-color 0.3s ease;
+    /* Performance optimizations */
+    contain: layout style;
+    will-change: contents;
 }
 
-.board.selectionMode {
-    box-shadow: 0 0 0 4px #edc22e, 0 8px 32px rgba(237, 194, 46, 0.3);
+.selectionMode .board {
+    /* Simplified border instead of heavy glow */
+    border: 3px solid #edc22e;
 }
 
 .gridBackground {
     position: absolute;
     inset: 0;
+    contain: strict;
 }
 
 .cell {
@@ -43,7 +49,14 @@
     z-index: 2;
 }
 
-/* Small screens adjustments */
+/* Mobile-specific optimizations */
+@media (max-width: 600px) {
+    .board {
+        /* Reduce shadow complexity on mobile */
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+}
+
 @media (max-width: 360px) {
     .board {
         border-radius: 8px;

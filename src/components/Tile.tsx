@@ -1,8 +1,10 @@
 'use client';
 
+import { memo, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { Tile as TileType, PowerUpMode } from '@/types/game';
 import { getTileColor } from '@/lib/constants';
+import { perfRender, perfAnimation } from '@/lib/perfLogger';
 import styles from './styles/Tile.module.css';
 
 interface TileProps {
@@ -15,10 +17,11 @@ interface TileProps {
   onClick?: () => void;
 }
 
-// Animation timing
-const SLIDE_DURATION = 0.15;
+// Animation timing - reduced for mobile performance
+const SLIDE_DURATION = 0.12; // Reduced from 0.15
 
-export function Tile({ 
+// Memoized tile component to prevent unnecessary re-renders
+export const Tile = memo(function Tile({ 
   tile, 
   cellSize, 
   gap, 
@@ -27,39 +30,39 @@ export function Tile({
   activeMode = 'none',
   onClick,
 }: TileProps) {
+  perfRender('Tile', { id: tile.id, value: tile.value });
+
   const { background, text } = getTileColor(tile.value);
   
-  // Calculate position in pixels
-  const x = tile.col * (cellSize + gap);
-  const y = tile.row * (cellSize + gap);
+  // Memoize position calculations
+  const { x, y, prevX, prevY, fontSize } = useMemo(() => {
+    const posX = tile.col * (cellSize + gap);
+    const posY = tile.row * (cellSize + gap);
+    const pX = tile.previousPosition ? tile.previousPosition.col * (cellSize + gap) : posX;
+    const pY = tile.previousPosition ? tile.previousPosition.row * (cellSize + gap) : posY;
+    
+    // Calculate font size based on digits
+    const digits = tile.value.toString().length;
+    let size = cellSize * 0.45;
+    if (digits === 3) size = cellSize * 0.38;
+    else if (digits === 4) size = cellSize * 0.32;
+    else if (digits >= 5) size = cellSize * 0.26;
+    
+    return { x: posX, y: posY, prevX: pX, prevY: pY, fontSize: size };
+  }, [tile.col, tile.row, tile.previousPosition, tile.value, cellSize, gap]);
 
-  // Previous position for merge animation
-  const prevX = tile.previousPosition ? tile.previousPosition.col * (cellSize + gap) : x;
-  const prevY = tile.previousPosition ? tile.previousPosition.row * (cellSize + gap) : y;
-
-  // Determine font size based on number of digits
-  const digits = tile.value.toString().length;
-  let fontSize = cellSize * 0.45;
-  if (digits === 3) fontSize = cellSize * 0.38;
-  else if (digits === 4) fontSize = cellSize * 0.32;
-  else if (digits >= 5) fontSize = cellSize * 0.26;
-
-  // Determine if this tile can be clicked for the current power-up
   const canClick = isClickable && (
     (activeMode === 'divider' && tile.value > 2) ||
     (activeMode === 'doubler') ||
     (activeMode === 'swapper')
   );
 
-  // Shake animation for tiles when power-up is active
-  const shakeAnimation = isClickable && !isSelected ? {
-    rotate: [0, -2, 2, -2, 2, 0],
-    scale: [1, 1.02, 1, 1.02, 1],
-  } : {};
-
+  // Simplified animation - NO shake on mobile (performance killer)
+  // Using CSS animations instead of Framer Motion keyframes
+  
   return (
     <motion.div
-      className={`${styles.tile} ${canClick ? styles.clickable : ''} ${isSelected ? styles.selected : ''}`}
+      className={`${styles.tile} ${canClick ? styles.clickable : ''} ${isSelected ? styles.selected : ''} ${isClickable && !isSelected ? styles.wiggle : ''}`}
       style={{
         width: cellSize,
         height: cellSize,
@@ -77,55 +80,43 @@ export function Tile({
       animate={{ 
         x, 
         y, 
-        scale: isSelected ? 1.08 : 1, 
+        scale: isSelected ? 1.05 : 1, 
         opacity: 1,
-        ...shakeAnimation,
       }}
       transition={{
-        x: { duration: SLIDE_DURATION, ease: [0.33, 1, 0.68, 1] },
-        y: { duration: SLIDE_DURATION, ease: [0.33, 1, 0.68, 1] },
+        x: { duration: SLIDE_DURATION, ease: 'easeOut' },
+        y: { duration: SLIDE_DURATION, ease: 'easeOut' },
         scale: { 
-          duration: tile.isNew ? 0.2 : 0.15,
+          duration: tile.isNew ? 0.15 : 0.1,
           delay: tile.isMerged ? SLIDE_DURATION : 0,
-          ease: 'easeOut',
         },
-        opacity: { duration: 0.15 },
-        rotate: isClickable ? {
-          duration: 0.5,
-          repeat: Infinity,
-          repeatDelay: 0.8,
-        } : { duration: 0 },
+        opacity: { duration: 0.1 },
       }}
       onClick={canClick ? onClick : undefined}
-      whileHover={canClick ? { scale: 1.1 } : {}}
-      whileTap={canClick ? { scale: 0.95 } : {}}
+      onAnimationStart={() => perfAnimation('Tile', 'start')}
+      onAnimationComplete={() => perfAnimation('Tile', 'complete')}
     >
       <span className={styles.value}>{tile.value}</span>
       
-      {tile.isMerged && (
-        <motion.div
-          className={styles.mergePulse}
-          initial={{ scale: 1, opacity: 0 }}
-          animate={{ 
-            scale: [1, 1.4, 1.1],
-            opacity: [0.7, 0.4, 0],
-          }}
-          transition={{ 
-            duration: 0.3,
-            delay: SLIDE_DURATION,
-            ease: 'easeOut',
-          }}
-          style={{ backgroundColor: background }}
-        />
-      )}
-
-      {isSelected && (
-        <motion.div
-          className={styles.selectedRing}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-        />
-      )}
+      {/* Simplified merge effect - CSS only, no extra motion div */}
+      {tile.isMerged && <div className={styles.mergeFlash} style={{ backgroundColor: background }} />}
+      
+      {isSelected && <div className={styles.selectedRing} />}
     </motion.div>
   );
-}
+}, (prevProps, nextProps) => {
+  // Custom comparison for memo - only re-render if these change
+  return (
+    prevProps.tile.id === nextProps.tile.id &&
+    prevProps.tile.value === nextProps.tile.value &&
+    prevProps.tile.row === nextProps.tile.row &&
+    prevProps.tile.col === nextProps.tile.col &&
+    prevProps.tile.isNew === nextProps.tile.isNew &&
+    prevProps.tile.isMerged === nextProps.tile.isMerged &&
+    prevProps.cellSize === nextProps.cellSize &&
+    prevProps.gap === nextProps.gap &&
+    prevProps.isClickable === nextProps.isClickable &&
+    prevProps.isSelected === nextProps.isSelected &&
+    prevProps.activeMode === nextProps.activeMode
+  );
+});

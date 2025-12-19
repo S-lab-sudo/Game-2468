@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Tile, Direction, GameState, GameData, PowerUpState, PowerUpMode, Difficulty, getDefaultPowerUps } from '@/types/game';
 import { initializeTiles, move, spawnTile, isGameOver, hasWon, generateTileId } from '@/lib/gameEngine';
 import { STORAGE_KEYS, GRID_SIZES } from '@/lib/constants';
+import { perfState, perfStart, perfEnd } from '@/lib/perfLogger';
 
 interface UseGameReturn {
     tiles: Tile[];
@@ -39,21 +40,25 @@ export function useGame(): UseGameReturn {
     const [powerUps, setPowerUps] = useState<PowerUpState>(getDefaultPowerUps('easy'));
     const [undoState, setUndoState] = useState<{ tiles: Tile[]; score: number; powerUps: PowerUpState } | null>(null);
 
-    const gridSize = GRID_SIZES[difficulty];
+    // Memoize gridSize to prevent recalculation
+    const gridSize = useMemo(() => GRID_SIZES[difficulty], [difficulty]);
 
     // Check for game over with new conditions
     const checkGameOver = useCallback((currentTiles: Tile[], currentPowerUps: PowerUpState) => {
+        perfStart('checkGameOver');
         const noMoves = isGameOver(currentTiles, gridSize);
         const noPowerUps = (
             currentPowerUps.dividerLives <= 0 &&
             currentPowerUps.doublerLives <= 0 &&
             currentPowerUps.swapperLives <= 0
         );
+        perfEnd('checkGameOver');
         return noMoves && noPowerUps;
     }, [gridSize]);
 
     // Load game state from localStorage on mount
     useEffect(() => {
+        perfStart('useGame.loadState');
         if (typeof window === 'undefined') return;
 
         const savedName = localStorage.getItem(STORAGE_KEYS.PLAYER_NAME);
@@ -86,23 +91,36 @@ export function useGame(): UseGameReturn {
         }
 
         setIsLoading(false);
+        perfEnd('useGame.loadState');
+        perfState('useGame', 'State loaded from localStorage');
     }, []);
 
-    // Save game state to localStorage
+    // Save game state to localStorage - debounced via dependency array
     useEffect(() => {
         if (isLoading || typeof window === 'undefined') return;
 
-        const state: GameData = {
-            tiles,
-            score,
-            bestScore,
-            gameState,
-            playerName,
-            hasWonBefore,
-            difficulty,
-            powerUps,
+        // Use requestIdleCallback for non-blocking save
+        const saveState = () => {
+            perfStart('useGame.saveState');
+            const state: GameData = {
+                tiles,
+                score,
+                bestScore,
+                gameState,
+                playerName,
+                hasWonBefore,
+                difficulty,
+                powerUps,
+            };
+            localStorage.setItem(STORAGE_KEYS.GAME_STATE, JSON.stringify(state));
+            perfEnd('useGame.saveState');
         };
-        localStorage.setItem(STORAGE_KEYS.GAME_STATE, JSON.stringify(state));
+
+        if ('requestIdleCallback' in window) {
+            (window as Window & { requestIdleCallback: (cb: () => void) => number }).requestIdleCallback(saveState);
+        } else {
+            saveState();
+        }
     }, [tiles, score, gameState, hasWonBefore, isLoading, bestScore, playerName, difficulty, powerUps]);
 
     // Save best score separately
@@ -111,25 +129,37 @@ export function useGame(): UseGameReturn {
         localStorage.setItem(STORAGE_KEYS.BEST_SCORE, bestScore.toString());
     }, [bestScore, isLoading]);
 
-    // Execute a move
+    // Execute a move - optimized
     const executeMove = useCallback((direction: Direction) => {
-        if (gameState === 'over' || powerUps.activeMode !== 'none') return;
+        perfStart('executeMove');
+        perfState('useGame', `executeMove: ${direction}`);
+
+        if (gameState === 'over' || powerUps.activeMode !== 'none') {
+            perfEnd('executeMove');
+            return;
+        }
 
         if (powerUps.undoLives > 0) {
             setUndoState({ tiles: [...tiles], score, powerUps: { ...powerUps } });
         }
 
+        perfStart('move');
         const result = move(tiles, direction, gridSize);
+        perfEnd('move');
 
         if (result.moved) {
             const newScore = score + result.scoreGained;
             let newTiles = result.tiles;
 
+            perfStart('spawnTile');
             const spawned = spawnTile(newTiles, difficulty, newScore);
+            perfEnd('spawnTile');
+
             if (spawned) {
                 newTiles = [...newTiles, spawned];
             }
 
+            // Batch state updates
             setTiles(newTiles);
             setScore(newScore);
 
@@ -140,6 +170,7 @@ export function useGame(): UseGameReturn {
             if (!hasWonBefore && hasWon(newTiles)) {
                 setGameState('won');
                 setHasWonBefore(true);
+                perfEnd('executeMove');
                 return;
             }
 
@@ -147,10 +178,12 @@ export function useGame(): UseGameReturn {
                 setGameState('over');
             }
         }
+        perfEnd('executeMove');
     }, [tiles, score, bestScore, gameState, hasWonBefore, powerUps, gridSize, difficulty, checkGameOver]);
 
     // Undo last move
     const undo = useCallback(() => {
+        perfState('useGame', 'undo');
         if (!undoState || powerUps.undoLives <= 0) return;
 
         setTiles(undoState.tiles.map((t, i) => ({
@@ -170,6 +203,7 @@ export function useGame(): UseGameReturn {
 
     // Start a new game
     const newGame = useCallback(() => {
+        perfState('useGame', 'newGame');
         setTiles(initializeTiles(difficulty));
         setScore(0);
         setGameState('playing');
@@ -180,6 +214,7 @@ export function useGame(): UseGameReturn {
 
     // Set difficulty and start new game
     const setDifficulty = useCallback((newDifficulty: Difficulty) => {
+        perfState('useGame', `setDifficulty: ${newDifficulty}`);
         setDifficultyState(newDifficulty);
         setTiles(initializeTiles(newDifficulty));
         setScore(0);
@@ -201,6 +236,7 @@ export function useGame(): UseGameReturn {
     }, []);
 
     const activatePowerUp = useCallback((mode: PowerUpMode) => {
+        perfState('useGame', `activatePowerUp: ${mode}`);
         if (mode === 'none') return;
 
         if (mode === 'divider' && powerUps.dividerLives <= 0) return;
@@ -216,11 +252,20 @@ export function useGame(): UseGameReturn {
     }, [powerUps]);
 
     const handleTileClick = useCallback((tileId: string) => {
+        perfStart('handleTileClick');
+        perfState('useGame', `handleTileClick: ${tileId}`);
+
         const tile = tiles.find(t => t.id === tileId);
-        if (!tile) return;
+        if (!tile) {
+            perfEnd('handleTileClick');
+            return;
+        }
 
         if (powerUps.activeMode === 'divider') {
-            if (tile.value <= 2) return;
+            if (tile.value <= 2) {
+                perfEnd('handleTileClick');
+                return;
+            }
 
             setTiles(prev => prev.map(t =>
                 t.id === tileId
@@ -279,7 +324,10 @@ export function useGame(): UseGameReturn {
             }
         }
 
-        setTimeout(() => {
+        perfEnd('handleTileClick');
+
+        // Defer game over check to next tick
+        requestAnimationFrame(() => {
             setTiles(currentTiles => {
                 setPowerUps(currentPowerUps => {
                     if (checkGameOver(currentTiles, currentPowerUps)) {
@@ -289,7 +337,7 @@ export function useGame(): UseGameReturn {
                 });
                 return currentTiles;
             });
-        }, 100);
+        });
     }, [tiles, powerUps, hasWonBefore, checkGameOver]);
 
     const cancelPowerUp = useCallback(() => {

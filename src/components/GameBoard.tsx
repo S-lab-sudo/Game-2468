@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useCallback, memo } from 'react';
 import { Tile as TileType, PowerUpMode } from '@/types/game';
 import { Tile } from './Tile';
+import { perfRender, perfStart, perfEnd } from '@/lib/perfLogger';
 import styles from './styles/GameBoard.module.css';
 
 interface GameBoardProps {
@@ -15,7 +16,7 @@ interface GameBoardProps {
   onTileClick?: (tileId: string) => void;
 }
 
-// Calculate board dimensions based on screen width and grid size
+// Debounced resize handler for performance
 function useBoardSize(gridSize: number) {
   const [dimensions, setDimensions] = useState({
     boardSize: 480,
@@ -24,35 +25,43 @@ function useBoardSize(gridSize: number) {
   });
 
   useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+
     function calculateSize() {
+      perfStart('useBoardSize.calculateSize');
+      
       const screenWidth = window.innerWidth;
       const padding = 16;
-      
-      // Desktop max size - increased for larger grids
       const maxBoardSize = gridSize === 4 ? 520 : gridSize === 5 ? 560 : 600;
       const boardSize = Math.min(maxBoardSize, screenWidth - padding * 2);
-      
-      // Smaller gap for larger grids to maximize cell size
-      const gap = Math.max(
-        4, // Minimum gap 4px
-        Math.floor(boardSize * (gridSize <= 4 ? 0.025 : gridSize === 5 ? 0.02 : 0.015))
-      );
-      
+      const gap = Math.max(4, Math.floor(boardSize * (gridSize <= 4 ? 0.025 : gridSize === 5 ? 0.02 : 0.015)));
       const totalGaps = gap * (gridSize + 1);
       const cellSize = Math.floor((boardSize - totalGaps) / gridSize);
       
       setDimensions({ boardSize, gap, cellSize });
+      perfEnd('useBoardSize.calculateSize');
+    }
+
+    // Debounced resize handler - only recalculate after 100ms of no resize
+    function handleResize() {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(calculateSize, 100);
     }
 
     calculateSize();
-    window.addEventListener('resize', calculateSize);
-    return () => window.removeEventListener('resize', calculateSize);
+    window.addEventListener('resize', handleResize, { passive: true });
+    
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', handleResize);
+    };
   }, [gridSize]);
 
   return dimensions;
 }
 
-export function GameBoard({ 
+// Memoized GameBoard component
+export const GameBoard = memo(function GameBoard({ 
   tiles, 
   gridSize,
   onTouchStart, 
@@ -61,11 +70,28 @@ export function GameBoard({
   selectedTileId,
   onTileClick,
 }: GameBoardProps) {
+  perfRender('GameBoard', { tilesCount: tiles.length, gridSize });
+  
   const { boardSize, gap, cellSize } = useBoardSize(gridSize);
   const isSelectionMode = activeMode !== 'none';
 
-  // Generate background grid cells
+  // Memoize click handler to prevent re-creating on each render
+  const handleTileClick = useCallback((tileId: string) => {
+    onTileClick?.(tileId);
+  }, [onTileClick]);
+
+  // Memoize touch handlers
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    onTouchStart(e);
+  }, [onTouchStart]);
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    onTouchEnd(e);
+  }, [onTouchEnd]);
+
+  // Memoize background grid cells - only regenerate when dimensions change
   const backgroundCells = useMemo(() => {
+    perfStart('GameBoard.backgroundCells');
     const cells = [];
     for (let row = 0; row < gridSize; row++) {
       for (let col = 0; col < gridSize; col++) {
@@ -83,14 +109,15 @@ export function GameBoard({
         );
       }
     }
+    perfEnd('GameBoard.backgroundCells');
     return cells;
   }, [cellSize, gap, gridSize]);
 
   return (
     <div
       className={`${styles.boardWrapper} ${isSelectionMode ? styles.selectionMode : ''}`}
-      onTouchStart={onTouchStart}
-      onTouchEnd={onTouchEnd}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
     >
       <div 
         className={styles.board}
@@ -102,10 +129,7 @@ export function GameBoard({
 
         <div 
           className={styles.tilesContainer}
-          style={{
-            left: gap,
-            top: gap,
-          }}
+          style={{ left: gap, top: gap }}
         >
           {tiles.map((tile) => (
             <Tile
@@ -116,11 +140,11 @@ export function GameBoard({
               isClickable={isSelectionMode}
               isSelected={tile.id === selectedTileId}
               activeMode={activeMode}
-              onClick={() => onTileClick?.(tile.id)}
+              onClick={() => handleTileClick(tile.id)}
             />
           ))}
         </div>
       </div>
     </div>
   );
-}
+});
